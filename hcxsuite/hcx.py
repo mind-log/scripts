@@ -10,7 +10,6 @@ import time
 import itertools
 import signal
 import readline
-import binascii
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
@@ -28,7 +27,24 @@ class Config:
     INTERFACE = None
     BASE_DIR = Path(__file__).resolve().parent
     TARGETS_FILE = BASE_DIR / "targets.txt"
-    WORDLIST = "/usr/share/wordlists/rockyou.txt"
+    
+    # Auto-detect wordlist - check common locations
+    WORDLIST = None
+    @classmethod
+    def init_wordlist(cls):
+        wordlist_paths = [
+            "/usr/share/wordlists/rockyou.txt",
+            "/usr/share/wordlists/rockyou.txt.gz",
+            "/usr/share/passwords.txt",
+            "/usr/share/john/password.lst",
+            "/opt/wordlists/rockyou.txt",
+        ]
+        for wp in wordlist_paths:
+            if os.path.exists(wp):
+                cls.WORDLIST = wp
+                break
+        if cls.WORDLIST is None:
+            cls.WORDLIST = wordlist_paths[0]
 
     @classmethod
     def get_base_dir(cls):
@@ -36,50 +52,8 @@ class Config:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-# Simple Spinner
-def spinner_animation(stop_event, message="Working"):
-    spinner = itertools.cycle(['-', '\\', '|', '/'])
-    while not stop_event.is_set():
-        print(f"\r{Colors.YELLOW}[*] {message} {next(spinner)}{Colors.NC}", end="", flush=True)
-        time.sleep(0.15)
-    print("\r" + " " * 60, end="\r")  # Clear line
-
-import signal
-
-def run_command(cmd, description="", live_output=True, cwd=None):
-    # Remove 'sudo' if already running as root
-    if os.geteuid() == 0:
-        cmd = cmd.replace("sudo ", "")
-        
-    if description:
-        print(f"{Colors.YELLOW}[*] {description}...{Colors.NC}")
-    
-    # DEBUG: Print the command being executed
-    print(f"{Colors.BLUE}[DEBUG] Executing: {cmd} (in {cwd if cwd else 'cwd'}){Colors.NC}")
-    
-    try:
-        # Use shell=True cautiously
-        if live_output:
-            process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid, cwd=cwd)
-            try:
-                for line in process.stdout:
-                    print(line.strip())
-                process.wait()
-                return process.returncode == 0
-            except KeyboardInterrupt:
-                print(f"\n{Colors.YELLOW}[*] Stopping capture gracefully...{Colors.NC}")
-                # Send SIGINT to the process group to ensure it terminates gracefully
-                os.killpg(os.getpgid(process.pid), signal.SIGINT)
-                process.wait()
-                return True # Treat as success so it can be converted
-        else:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd)
-            if result.stdout:
-                print(result.stdout)
-            return result.returncode == 0
-    except Exception as e:
-        print(f"{Colors.RED}[!] Error: {e}{Colors.NC}")
-        return False
+# Initialize wordlist on import
+Config.init_wordlist()
 
 def get_monitor_interfaces():
     result = subprocess.run("iwconfig 2>/dev/null", shell=True, capture_output=True, text=True)
@@ -93,7 +67,10 @@ def check_interface():
     if not Config.INTERFACE:
         monitors = get_monitor_interfaces()
         if not monitors:
-            print(f"{Colors.RED}[!] No monitor mode interfaces found.{Colors.NC}")
+            print(f"{Colors.RED}[!] No wireless adapter in monitor mode found!{Colors.NC}")
+            print(f"{Colors.YELLOW}    Options 1 (Full) and 2 (Capture) require a monitor mode interface{Colors.NC}")
+            print(f"{Colors.YELLOW}    Options 3 (Extract) and 4 (Crack) do not need monitor mode{Colors.NC}")
+            input(f"\n{Colors.YELLOW}Press Enter to continue...{Colors.NC}")
             return False
         if len(monitors) == 1:
             Config.INTERFACE = monitors[0]
@@ -121,14 +98,16 @@ def check_interface():
 
 def print_banner():
     banner = r"""
-    __  __________  ________    ____ _       __
-   / / / / ____/ |/ / ____/ /   / __ \ |     / /
-  / /_/ / /    |   / /_  / /   / / / / | /| / / 
- / __  / /___ /   | / __/ /___/ /_/ /| |/ |/ /  
-/_/ /_/\____//_/|_|/_/   /_____/\____/ |__/|__/  
+ ██╗  ██╗ ██████╗██╗  ██╗███████╗██╗      ██████╗ ██╗    ██╗
+ ██║  ██║██╔════╝╚██╗██╔╝██╔════╝██║     ██╔═══██╗██║    ██║
+ ███████║██║      ╚███╔╝ █████╗  ██║     ██║   ██║██║ █╗ ██║
+ ██╔══██║██║      ██╔██╗ ██╔══╝  ██║     ██║   ██║██║███╗██║
+ ██║  ██║╚██████╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚███╔███╔╝
+ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝ 
+                                           by Ebisu
     """
     print(f"{Colors.GREEN}{banner}{Colors.NC}")
-    print(f"{Colors.YELLOW}             Capture. Extract. Crack.{Colors.NC}\n")
+    print(f"{Colors.YELLOW}                 Capture. Extract. Crack.{Colors.NC}\n")
 
 def main_menu():
     while True:
@@ -174,6 +153,38 @@ def get_next_capture_file(out_dir, prefix="capture"):
             continue
     return out_dir / f"{prefix}{highest + 1}.pcapng"
 
+def run_command(cmd, description="", live_output=True, cwd=None):
+    # Remove 'sudo' if already running as root (only at start)
+    if os.geteuid() == 0 and cmd.startswith("sudo "):
+        cmd = cmd[5:]  # Remove first 5 characters ("sudo ")
+        
+    if description:
+        print(f"{Colors.YELLOW}[*] {description}...{Colors.NC}")
+    
+    try:
+        # Use shell=True cautiously
+        if live_output:
+            process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid, cwd=cwd)
+            try:
+                for line in process.stdout:
+                    print(line.strip())
+                process.wait()
+                return process.returncode == 0
+            except KeyboardInterrupt:
+                print(f"\n{Colors.YELLOW}[*] Stopping capture gracefully...{Colors.NC}")
+                # Send SIGINT to the process group to ensure it terminates gracefully
+                os.killpg(os.getpgid(process.pid), signal.SIGINT)
+                process.wait()
+                return True # Treat as success so it can be converted
+        else:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd)
+            if result.stdout:
+                print(result.stdout)
+            return result.returncode == 0
+    except Exception as e:
+        print(f"{Colors.RED}[!] Error: {e}{Colors.NC}")
+        return False
+
 def capture():
     out_dir = Config.get_base_dir()
     if not check_interface():
@@ -187,7 +198,7 @@ def capture():
     except ValueError:
         print(f"{Colors.RED}[!] Invalid input. Defaulting to manual stop.{Colors.NC}")
         minutes = 0
-
+    
     scan_file = get_next_capture_file(out_dir, prefix="capture")
     
     cmd = f"hcxdumptool -i {Config.INTERFACE} -w {scan_file} --rds=3"
@@ -215,14 +226,14 @@ def capture():
     if success and scan_file.exists():
         base_name = scan_file.stem
         run_command(
-            f"hcxpcapngtool -o {out_dir}/{base_name}.22000 -E {out_dir}/essids_{base_name}.txt "
+            f"hcxpcapngtool -o {out_dir}/{base_name}.hc22000 -E {out_dir}/essids_{base_name}.txt "
             f"-I {out_dir}/identities_{base_name}.txt -U {out_dir}/usernames_{base_name}.txt {scan_file}",
             "Extracting ESSIDs, identities and usernames"
         )
         print(f"{Colors.GREEN}[+] Capture completed successfully!{Colors.NC}")
     else:
         print(f"{Colors.RED}[!] Capture file {scan_file} not found or failed.{Colors.NC}")
-
+    
     input("\nPress Enter to return to menu...")
 
 def full():
@@ -238,11 +249,12 @@ def full():
     success = run_command(f"hcxdumptool -i {Config.INTERFACE} -w {capture_file} --rds=3 --tot=5", 
                           f"Capturing to {capture_file.name}")
     
+    # Even if Ctrl+C was pressed or capture failed, check if pcap file exists and try to convert
     if not capture_file.exists():
-        print(f"{Colors.RED}[!] Capture file not created.{Colors.NC}")
+        print(f"{Colors.RED}[!] No capture file created.{Colors.NC}")
         return
-
-    # 2. Conversion
+    
+    # 2. Conversion - try even if capture was interrupted
     base_name = capture_file.stem
     hash_file = out_dir / f"{base_name}.hc22000"
     essid_file = out_dir / f"{base_name}.essids"
@@ -251,7 +263,7 @@ def full():
     run_command(f"hcxpcapngtool -o {hash_file} -E {essid_file} {capture_file}",
                 "Converting to Hashcat format")
     
-    # 3. Cracking (Automated)
+    # 3. Cracking - try even if previous step was interrupted
     if hash_file.exists():
         print(f"{Colors.YELLOW}[*] Auto-starting crack...{Colors.NC}")
         if not os.path.exists(Config.WORDLIST):
@@ -263,8 +275,9 @@ def full():
 
 def hashes():
     out_dir = Config.get_base_dir()
+    PAGE_SIZE = 10
     
-    # Find the latest .pcapng file in out_dir
+    # Find all .pcapng files
     pcap_files = sorted(list(out_dir.glob("*.pcapng")), key=os.path.getmtime, reverse=True)
     
     if not pcap_files:
@@ -272,18 +285,88 @@ def hashes():
         input("Press Enter...")
         return
     
-    pcap = pcap_files[0]
+    # Build list with info about each file
+    file_info = []
+    for f in pcap_files:
+        size_kb = f.stat().st_size / 1024
+        mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        base_name = f.stem
+        hash_file = out_dir / f"{base_name}.hc22000"
+        essid_file = out_dir / f"essids_{base_name}.txt"
+        
+        # Count hashes if hash file exists
+        hash_count = 0
+        if hash_file.exists():
+            try:
+                with open(hash_file, 'r', encoding='utf-8', errors='ignore') as hf:
+                    hash_count = sum(1 for line in hf if line.strip())
+            except:
+                pass
+        
+        # Count ESSIDs if essid file exists
+        essid_count = 0
+        if essid_file.exists():
+            try:
+                with open(essid_file, 'r', encoding='utf-8', errors='ignore') as ef:
+                    essid_count = sum(1 for line in ef if line.strip())
+            except:
+                pass
+        
+        file_info.append({
+            'file': f,
+            'size': size_kb,
+            'mtime': mtime,
+            'hash_count': hash_count,
+            'essid_count': essid_count,
+            'base_name': base_name
+        })
+    
+    total_pages = (len(file_info) + PAGE_SIZE - 1) // PAGE_SIZE
+    current_page = 0
+    
+    while True:
+        start_idx = current_page * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, len(file_info))
+        
+        print(f"\n{Colors.BLUE}=== Select File to Extract (Page {current_page + 1}/{total_pages + 1}) ==={Colors.NC}")
+        
+        for i in range(start_idx, end_idx):
+            info = file_info[i]
+            hash_info = f"{info['hash_count']} hashes" if info['hash_count'] > 0 else "not extracted"
+            essid_info = f"{info['essid_count']} ESSIDs" if info['essid_count'] > 0 else "no ESSIDs"
+            print(f"  {i+1}. {info['file'].name}")
+            print(f"      Size: {info['size']:.1f} KB | Date: {info['mtime']}")
+            print(f"      {hash_info} | {essid_info}")
+        
+        print()
+        if current_page > 0:
+            print("  P. Previous page")
+        if current_page < total_pages:
+            print("  N. Next page")
+        print("  0. Back to menu")
+        
+        choice = input(f"{Colors.YELLOW}Select file (0/{'N' if current_page < total_pages else ''}/{'P' if current_page > 0 else ''}): {Colors.NC}").strip().upper()
+        
+        if choice == "0":
+            return
+        elif choice == "P" and current_page > 0:
+            current_page -= 1
+        elif choice == "N" and current_page < total_pages:
+            current_page += 1
+        elif choice.isdigit() and 1 <= int(choice) <= len(file_info):
+            pcap = file_info[int(choice) - 1]['file']
+            break
+        else:
+            print(f"{Colors.RED}[!] Invalid choice.{Colors.NC}")
     
     print(f"{Colors.BLUE}=== Converting Capture: {pcap.name} ==={Colors.NC}")
-    
-    # Define new names based on this pcap file
     base_name = pcap.stem
     
-    run_command(f"hcxpcapngtool -o {out_dir}/{base_name}.22000 -E {out_dir}/essids_{base_name}.txt "
+    run_command(f"hcxpcapngtool -o {out_dir}/{base_name}.hc22000 -E {out_dir}/essids_{base_name}.txt "
                 f"-I {out_dir}/identities_{base_name}.txt -U {out_dir}/usernames_{base_name}.txt {pcap}",
                 "Converting to Hashcat format")
     
-    run_command(f"hcxhashtool -o {out_dir}/clean_{base_name}.22000 {out_dir}/{base_name}.22000", 
+    run_command(f"hcxhashtool -o {out_dir}/clean_{base_name}.hc22000 {out_dir}/{base_name}.hc22000", 
                 "Cleaning and analyzing hashes")
     
     print(f"{Colors.GREEN}[+] Conversion completed!{Colors.NC}")
@@ -297,17 +380,9 @@ def crack():
     cracked_dir.mkdir(exist_ok=True)
     potfile = cracked_dir / "cracked.txt"
     
-    # Find the latest hash file
-    hash_files = sorted(list(out_dir.glob("*.22000")), key=os.path.getmtime, reverse=True)
-    
-    # We define hashfile here to be used in the menu logic
-    hashfile = None
-    if hash_files:
-        hashfile = str(hash_files[0])
-        print(f"{Colors.YELLOW}[*] Using found hash file: {hashfile}{Colors.NC}")
-    
-    print(f"\n{Colors.BLUE}=== Cracking Menu ==={Colors.NC}")
-    print("1. Resume last session (--restore)")
+    # FIRST: Show the crack menu
+    print(f"\n{Colors.BLUE}=== Crack Menu ==={Colors.NC}")
+    print("1. Resume Hashcat")
     print("2. Dictionary Attack")
     print("3. Combination Attack")
     print("4. Bruteforce (Mask) Attack")
@@ -316,66 +391,157 @@ def crack():
     
     ch = input(f"{Colors.YELLOW}Choose (1-6): {Colors.NC}")
     
+    if ch == "6" or ch == "0":
+        return
+    
+    # THEN: Show file selection based on choice
+    PAGE_SIZE = 10
+    
     if ch == "1":
-        # Look for .restore files in the base directory and standard hashcat session dir
+        # Resume: show ONLY hashcat session files (no extracted hashes)
         restore_dirs = [out_dir, Path.home() / ".local/share/hashcat/sessions/", Path.home() / ".hashcat/sessions/"]
+        
         restore_files = []
         for d in restore_dirs:
             if d.exists():
                 restore_files.extend(list(d.glob("*.restore")))
         
         if not restore_files:
-            print(f"{Colors.RED}[!] No session restore files found in {out_dir} or {restore_dirs[1]}{Colors.NC}")
+            print(f"{Colors.RED}[!] No saved sessions found! Start a crack first.{Colors.NC}")
             input("Press Enter...")
             return
         
-        print(f"{Colors.YELLOW}[*] Available sessions:{Colors.NC}")
-        for i, f in enumerate(restore_files):
-            print(f"  {i+1}. {f.name} (at {f.parent})")
+        # Build list of restore files only
+        file_info = []
+        for f in restore_files:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            file_info.append({
+                'type': 'restore',
+                'name': f.name,
+                'size': 0,
+                'mtime': mtime,
+                'count': 0,
+                'path': str(f.parent),
+                'session': f.stem,
+                'is_restore': True
+            })
         
-        choice = input(f"{Colors.YELLOW}Select session (1-{len(restore_files)}): {Colors.NC}")
-        if choice.isdigit() and 1 <= int(choice) <= len(restore_files):
-            session_file = restore_files[int(choice)-1]
-            session_name = session_file.stem
-            
-            # Use --session=NAME --restore to correctly resume a saved session
-            # We run it in the parent directory of the restore file to ensure it finds the session data
-            run_command(f"hashcat --session={session_name} --restore --potfile-path={potfile} --force", 
-                        f"Resuming session: {session_name}", cwd=str(session_file.parent))
+        # Sort by time
+        file_info.sort(key=lambda x: x['mtime'], reverse=True)
+        
+        title = "Select Hashcat Session to Resume"
+    else:
+        # New crack: show only hash files
+        hash_files = sorted(list(out_dir.glob("*.hc22000")), key=os.path.getmtime, reverse=True)
+        
+        if not hash_files:
+            print(f"{Colors.RED}[!] No hash file found! Run Extract first.{Colors.NC}")
+            input("Press Enter...")
+            return
+        
+        file_info = []
+        for f in hash_files:
+            size_kb = f.stat().st_size / 1024
+            mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            hash_count = 0
+            try:
+                with open(f, 'r', encoding='utf-8', errors='ignore') as hf:
+                    hash_count = sum(1 for line in hf if line.strip())
+            except:
+                pass
+            file_info.append({
+                'type': 'hash',
+                'name': f.name,
+                'size': size_kb,
+                'mtime': mtime,
+                'count': hash_count,
+                'path': str(f),
+                'is_restore': False
+            })
+        
+        title = "Select Hash File to Crack"
+    
+    # File selection with pagination
+    total_pages = (len(file_info) + PAGE_SIZE - 1) // PAGE_SIZE
+    current_page = 0
+    
+    while True:
+        start_idx = current_page * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, len(file_info))
+        
+        print(f"\n{Colors.BLUE}=== {title} (Page {current_page + 1}/{total_pages + 1}) ==={Colors.NC}")
+        
+        for i in range(start_idx, end_idx):
+            info = file_info[i]
+            if info['is_restore']:
+                print(f"  {i+1}. {info['name']}")
+                print(f"      Date: {info['mtime']}")
+            else:
+                print(f"  {i+1}. {info['name']}")
+                print(f"      Size: {info['size']:.1f} KB | Date: {info['mtime']}")
+                print(f"      {info['count']} hashes")
+        
+        print()
+        if current_page > 0:
+            print("  P. Previous page")
+        if current_page < total_pages:
+            print("  N. Next page")
+        print("  0. Back to menu")
+        
+        choice = input(f"{Colors.YELLOW}Select (0/{'N' if current_page < total_pages else ''}/{'P' if current_page > 0 else ''}): {Colors.NC}").strip().upper()
+        
+        if choice == "0":
+            return
+        elif choice == "P" and current_page > 0:
+            current_page -= 1
+        elif choice == "N" and current_page < total_pages:
+            current_page += 1
+        elif choice.isdigit() and 1 <= int(choice) <= len(file_info):
+            selected = file_info[int(choice) - 1]
+            break
         else:
             print(f"{Colors.RED}[!] Invalid choice.{Colors.NC}")
-        return
-
-    if ch in ["2", "3", "4", "5"]:
-        session_name = input("Enter a name for this session: ").strip() or "hcx_session"
-        cmd_base = f"hashcat -m 22000 {hashfile} -w 3 --session={session_name} --potfile-path={potfile} --force"
+    
+    # Execute based on choice
+    if ch == "1":
+        # Resume session - only restore files, no hash files
+        session_name = selected['session']
+        run_command(f"hashcat --session={session_name} --restore --potfile-path={potfile} --force", 
+                    f"Resuming session: {session_name}", cwd=selected['path'])
         
-        if ch == "2": # Dictionary
-            if not os.path.exists(Config.WORDLIST):
-                 print(f"{Colors.RED}[!] Wordlist {Config.WORDLIST} not found!{Colors.NC}")
-                 return
-            run_command(f"{cmd_base} {Config.WORDLIST}", "Running Dictionary Attack", cwd=str(out_dir))
-            
-        elif ch == "3": # Combination
-            w1 = input("Path to first wordlist: ").strip()
-            w2 = input("Path to second wordlist: ").strip()
-            run_command(f"{cmd_base} -a 1 {w1} {w2}", "Running Combination Attack", cwd=str(out_dir))
-            
-        elif ch == "4": # Bruteforce/Mask
-            mask = input("Enter mask (e.g., ?d?d?d?d?d?d?d?d): ")
-            run_command(f"{cmd_base} -a 3 {mask}", f"Running Mask Attack: {mask}", cwd=str(out_dir))
-            
-        elif ch == "5": # Hybrid
-            if not os.path.exists(Config.WORDLIST):
-                 print(f"{Colors.RED}[!] Wordlist {Config.WORDLIST} not found!{Colors.NC}")
-                 return
-            mask = input("Enter mask to append/prepend (e.g., ?d?d?d): ")
-            run_command(f"{cmd_base} -a 6 {Config.WORDLIST} {mask}", f"Running Hybrid Attack with mask: {mask}", cwd=str(out_dir))
-
-            
-        # Post-process results
-        print(f"\n{Colors.GREEN}=== Cracked Results saved in {potfile} ==={Colors.NC}")
+        print(f"\n{Colors.GREEN}=== Session Resume Complete ==={Colors.NC}")
         input("\nPress Enter to return to menu...")
+        return
+    
+    # New crack attacks (options 2-5)
+    session_name = input("Enter a name for this session: ").strip() or "hcx_session"
+    hashfile = selected['path']
+    cmd_base = f"hashcat -m 22000 {hashfile} -w 3 --session={session_name} --potfile-path={potfile} --force"
+    
+    if ch == "2":  # Dictionary
+        if not os.path.exists(Config.WORDLIST):
+            print(f"{Colors.RED}[!] Wordlist {Config.WORDLIST} not found!{Colors.NC}")
+            return
+        run_command(f"{cmd_base} {Config.WORDLIST}", "Running Dictionary Attack", cwd=str(out_dir))
+        
+    elif ch == "3":  # Combination
+        w1 = input("Path to first wordlist: ").strip()
+        w2 = input("Path to second wordlist: ").strip()
+        run_command(f"{cmd_base} -a 1 {w1} {w2}", "Running Combination Attack", cwd=str(out_dir))
+        
+    elif ch == "4":  # Bruteforce/Mask
+        mask = input("Enter mask (e.g., ?d?d?d?d?d?d?d?d): ")
+        run_command(f"{cmd_base} -a 3 {mask}", f"Running Mask Attack: {mask}", cwd=str(out_dir))
+        
+    elif ch == "5":  # Hybrid
+        if not os.path.exists(Config.WORDLIST):
+            print(f"{Colors.RED}[!] Wordlist {Config.WORDLIST} not found!{Colors.NC}")
+            return
+        mask = input("Enter mask to append/prepend (e.g., ?d?d?d): ")
+        run_command(f"{cmd_base} -a 6 {Config.WORDLIST} {mask}", f"Running Hybrid Attack with mask: {mask}", cwd=str(out_dir))
+    
+    print(f"\n{Colors.GREEN}=== Cracking Complete ==={Colors.NC}")
+    input("\nPress Enter to return to menu...")
 
 
 def settings():
@@ -394,8 +560,34 @@ def settings():
     print(f"{Colors.GREEN}Settings updated.{Colors.NC}")
     input("Press Enter...")
 
+def check_dependencies():
+    """Check that required tools are installed"""
+    missing = []
+    tools = ['hcxdumptool', 'hcxpcapngtool', 'hashcat']
+    
+    for tool in tools:
+        result = subprocess.run(f"which {tool}", shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            missing.append(tool)
+    
+    if missing:
+        print(f"{Colors.RED}[!] Missing required tools: {', '.join(missing)}{Colors.NC}")
+        print(f"{Colors.YELLOW}    Install with: apt-get install hcxtools hashcat{Colors.NC}")
+        return False
+    
+    if not os.path.exists(Config.WORDLIST):
+        print(f"{Colors.YELLOW}[!] Default wordlist not found: {Config.WORDLIST}{Colors.NC}")
+        print(f"{Colors.YELLOW}    You can set a custom wordlist in Settings menu{Colors.NC}")
+        print(f"{Colors.YELLOW}    Or download rockyou.txt from GitHub{Colors.NC}")
+    
+    return True
+
 # ===================== START =====================
 if __name__ == "__main__":
+    # Check dependencies first
+    if not check_dependencies():
+        sys.exit(1)
+    
     if os.geteuid() != 0:
         print(f"{Colors.RED}Please run with: sudo python3 hcx.py{Colors.NC}")
         sys.exit(1)
