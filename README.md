@@ -249,4 +249,10 @@ hcxdumptool -i wlan0 --rds=3
 - Session resume functionality
 - Multiple attack vectors (Dictionary, Combination, Mask, Hybrid)
 - Settings menu for interface and wordlist configuration
+
+## Support ☕
+
+If this project saves you time or helps you learn, you can support development:
+
+☕ https://ko-fi.com/ebisu1og
 </div>
