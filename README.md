@@ -254,5 +254,5 @@ hcxdumptool -i wlan0 --rds=3
 
 If this project saves you time or helps you learn, you can support development:
 
-☕ https://ko-fi.com/ebisu1og
+[☕ Buy me a coffee](https://ko-fi.com/ebisu1og)
 </div>
